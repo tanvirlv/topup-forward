@@ -162,32 +162,26 @@ async def topup_order(
         payload["metadata"] = request_data.metadata
 
     target_url = f"{MAIN_SERVER_URL}/topup"
-    logger.info(f"📤 Forwarding order {request_data.orderid!r} → {target_url}")
+    logger.info(f"📤 Fire-and-forget order {request_data.orderid!r} → {target_url}")
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(target_url, json=payload, headers=forward_headers)
+    # Fire and forget — don't wait for main server response
+    async def forward():
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(target_url, json=payload, headers=forward_headers)
+            logger.info(f"📥 Main server responded {resp.status_code} for order {request_data.orderid!r}")
+        except Exception as exc:
+            logger.error(f"❌ Background forward failed for {request_data.orderid!r}: {exc}")
 
-        logger.info(f"📥 Main server responded {resp.status_code}")
+    import asyncio
+    asyncio.create_task(forward())
 
-        # Surface any error from the main server verbatim
-        if resp.status_code != 200:
-            try:
-                detail = resp.json()
-            except Exception:
-                detail = resp.text
-            raise HTTPException(status_code=resp.status_code, detail=detail)
-
-        return resp.json()
-
-    except HTTPException:
-        raise
-    except httpx.TimeoutException:
-        logger.error("❌ Timeout while contacting main server")
-        raise HTTPException(status_code=504, detail="Main server timed out")
-    except Exception as exc:
-        logger.error(f"❌ Unexpected error forwarding request: {exc}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=502, detail=f"Proxy error: {str(exc)}")
+    # Return immediately
+    return TopUpResponse(
+        status="accepted",
+        orderid=request_data.orderid,
+        message="Order received and forwarded.",
+    )
 
 
 # ── Catch-all (keeps the same UX as the original) ─────────
